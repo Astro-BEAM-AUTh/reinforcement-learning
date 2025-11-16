@@ -11,7 +11,7 @@ from sun_tracking.sky_objects.sun_model import sun_vector
 def _wrap_pi(a):
     return ((a + math.pi) % (2.0 * math.pi)) - math.pi
 
-def _clip_el(el):
+def _clip_el(el) -> float:
     return float(np.clip(el, 0.0, math.pi / 2.0))
 
 
@@ -31,7 +31,6 @@ def step_with_lag(az, el, az_dot, el_dot, v_az_cmd, v_el_cmd, dt, v_max, tau):
       - return (az, el, az_dot, el_dot, n̂)
     All angles in radians; velocities in rad/s; dt,tau in seconds.
     """
-
     # make sure the policy does not give speeds that are super fast and unrealistic
     v_az_cmd = float(np.clip(v_az_cmd, -v_max, v_max))
     v_el_cmd = float(np.clip(v_el_cmd, -v_max, v_max))
@@ -181,7 +180,7 @@ class SunDishEnv(gym.Env):
         # get sun vector from sim
         s = self.sim.sun_vec()
 
-        self.P = sim.compute_power(n, s, noise_std = self.noise_std)
+        self.P = self.sim.compute_power(n, s, noise_std = self.noise_std)
         self.last_P = self.P
 
         # return the observation with the values after reset
@@ -204,7 +203,7 @@ class SunDishEnv(gym.Env):
         # get sun vector, store previous P value and calculate new P value
         s = self.sim.sun_vec()
         self.last_P = self.P
-        self.P = compute_power(n, s, self.noise_std)
+        self.P = compute_power(self.n, s, self.noise_std)
 
         # advance simulation clock
         self.sim.tick()
