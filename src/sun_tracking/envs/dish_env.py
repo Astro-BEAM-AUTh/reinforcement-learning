@@ -166,6 +166,14 @@ class SunDishEnv(gym.Env):
         self.sim.t = 0.0
         self.elapsed = 0.0
 
+        # Randomize within a day until sun is above horizon (daylight start)
+        for _ in range(24):  # try up to 24 random hours
+            self.sim.t = float(self.np_random.uniform(0.0, 24.0 * 3600.0))
+            s_try = self.sim.sun_vec()
+            if s_try[2] > 0.0:  # z>0 => elevation > 0 deg
+                break
+
+
 
         # initialize az, el with random values from a normal distribution to start(here we will put the coordinates from the science paper)
         # velocities are 0
@@ -180,40 +188,43 @@ class SunDishEnv(gym.Env):
         # get sun vector from sim
         s = self.sim.sun_vec()
 
-        self.P = self.sim.compute_power(n, s, noise_std = self.noise_std)
+        self.P = compute_power(n, s, noise_std = self.noise_std)
         self.last_P = self.P
 
         # return the observation with the values after reset
-        return self._obs()
+        return self._obs(), {}
 
     def step(self, action):
         """
         Here is where our simulation actually takes our recomended action and runs the simulation and updates the state,
         gives the new power reading at the new position, advances time and gives ur our reward as feedback for the training.
         """
+         # 1) scale action -> commanded speeds
         action = np.asarray(action, dtype=np.float32)
-        action = np.clip(action, -1.0, 1.0)             # enforce normalized range
-        v_cmd_az = float(action[0]) * self.v_max        # [-1,1] -> [-v_max, +v_max]  # noqa: F841
-        v_cmd_el = float(action[1]) * self.v_max  # noqa: F841
+        action = np.clip(action, -1.0, 1.0)
+        v_cmd_az = float(action[0]) * self.v_max
+        v_cmd_el = float(action[1]) * self.v_max
 
-        self.az, self.el, self.az_dot, self.el_dot, self.n = step_with_lag(self.az, self.el, self.az_dot, 
-        self.el_dot, self.v_az_cmd, self.v_el_cmd, self.dt, self.v_max, self.tau)
+        # 2) integrate dish dynamics over dt to new angles
+        self.az, self.el, self.az_dot, self.el_dot, n = step_with_lag(
+        self.az, self.el, self.az_dot, self.el_dot,
+        v_cmd_az, v_cmd_el,
+        self.sim.dt, self.v_max, self.tau
+        )
 
-
-        # get sun vector, store previous P value and calculate new P value
-        s = self.sim.sun_vec()
-        self.last_P = self.P
-        self.P = compute_power(self.n, s, self.noise_std)
-
-        # advance simulation clock
+        # 3) advance sim time first
         self.sim.tick()
-        self.elapsed += self.sim.dt   # count how much time has passed
+        self.elapsed += self.sim.dt
 
-        # we use as reward P. So the rl algo is happy when P is bigger than last time
+        # 4) read Sun at the NEW time and compute power at end of step
+        s = self.sim.sun_vec()                 # ŝ(t + dt)
+        self.last_P = self.P
+        self.P = compute_power(n, s, self.noise_std)
+
+        # 5) reward & done
         reward = float(self.P)
+        terminated = False
+        truncated  = bool(self.elapsed >= self.horizon_s)
 
-        # give the agent horizon_s time (in seconds) to find the sun(currently set to 90s)
-        terminated = False # needed for gymnasium
-        truncated  = bool(self.elapsed >= self.horizon_s)  # cut off by time horizon
+        return self._obs(), reward, terminated, truncated, {"power": float(self.P)}
 
-        return self._obs(), reward, terminated, truncated, {}
