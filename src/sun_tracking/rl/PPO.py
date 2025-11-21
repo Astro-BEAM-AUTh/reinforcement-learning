@@ -36,46 +36,67 @@ def make_eval_env(seed: int = 0, noise_std: int = 0.0)->Monitor:
 
 # ---------- EVALUATION FUNCTION ----------
 
-def evaluate_policy_multi_episodes(model, n_episodes: int=50, noise_std:float=0.0,
-                                   seed: int=123)->tuple[float, float, float]:
+def evaluate_policy_multi_episodes(
+    model,
+    n_episodes: int = 50,
+    noise_std: float = 0.0,
+    seed: int = 123,
+    tail_k: int = 10,
+) -> tuple[float, float, float]:
     """
-    Run several eval episodes and print average stats.
+    Evaluate a policy over multiple episodes.
+
     - model: trained PPO model
     - n_episodes: how many episodes to average over
-    - noise_std: 0.0 for clean eval, >0 if you want noisy eval.
+    - noise_std: sensor noise during eval
+    - seed: seed for env (controls initial conditions)
+    - tail_k: how many last steps to average for "tail power"
     """
     eval_env = make_eval_env(seed=seed, noise_std=noise_std)
 
     returns = []
-    last_powers = []
+    last_powers = []      # single final power (for debugging)
+    tail_powers = []      # average over last tail_k rewards
 
-    for _ep in range(n_episodes):
+    for ep in range(n_episodes):
         obs, info = eval_env.reset()
         total_r = 0.0
+        rewards_hist = []
 
         while True:
-            # deterministic = no exploration noise
             action, _ = model.predict(obs, deterministic=True)
             obs, r, terminated, truncated, info = eval_env.step(action)
-            total_r += float(r)
+            r = float(r)
+            total_r += r
+            rewards_hist.append(r)
 
             if terminated or truncated:
-                # store final power and episode return
+                # single final power (if env still stores it in info)
                 last_powers.append(float(info.get("power", 0.0)))
+
+                # average reward over last tail_k steps
+                k = min(tail_k, len(rewards_hist))
+                tail_avg = sum(rewards_hist[-k:]) / k
+                tail_powers.append(tail_avg)
+
                 returns.append(total_r)
                 break
-    power_threshold = 0.95 # if we have power above 95% we have found the sun
+
     avg_return = sum(returns) / len(returns)
     avg_last_power = sum(last_powers) / len(last_powers)
-    success_rate = sum(1 for p in last_powers if p > power_threshold) / len(last_powers)
+    avg_tail_power = sum(tail_powers) / len(tail_powers)
+
+    # success based on *tail average* instead of one noisy sample
+    success_rate = sum(1 for p in tail_powers if p > 0.95) / len(tail_powers)
 
     print(f"Eval over {n_episodes} episodes (noise_std={noise_std}):")
-    print(f"  Avg total reward   : {avg_return:.2f}")
-    print(f"  Avg last power     : {avg_last_power:.4f}")
-    print(f"  Success rate (last_power > 0.95): {success_rate * 100:.1f}%")
+    print(f"  Avg total reward            : {avg_return:.2f}")
+    print(f"  Avg last power (single step): {avg_last_power:.4f}")
+    print(f"  Avg tail power (last {tail_k} steps): {avg_tail_power:.4f}")
+    print(f"  Success (tail_avg > 0.95)   : {success_rate * 100:.1f}%")
 
-    # return them too if you want to log/use them
-    return avg_return, avg_last_power, success_rate
+    return avg_return, avg_tail_power, success_rate
+
 
 
 # ---------- MAIN ----------
@@ -111,6 +132,5 @@ def main()->None:
 
     # --- NEW: multi-episode evaluation ---
     evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.01, seed=999)
-
 if __name__ == "__main__":
     main()
