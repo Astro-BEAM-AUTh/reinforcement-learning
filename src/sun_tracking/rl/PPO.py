@@ -41,7 +41,7 @@ def evaluate_policy_multi_episodes(
     n_episodes: int = 50,
     noise_std: float = 0.0,
     seed: int = 123,
-    tail_k: int = 10,
+    tail_k: int = 100,
 ) -> tuple[float, float, float]:
     """
     Evaluate a policy over multiple episodes.
