@@ -54,24 +54,26 @@ def step_with_lag(az, el, az_dot, el_dot, v_az_cmd, v_el_cmd, dt, v_max, tau):
 
     return az, el, az_dot, el_dot, n
 
-def compute_power(n, s, noise_std):
-        """
-        Power(P) we read from the sensor of the dish. In our model we calculate P as the inner product
-        of the sun vector(s) and the dish vector(n), so the more alligned we are with the sun(so the sun vector)
-        the more Power we get.
-        """
-        # calculate the inner product of n and s, P = n*s
-        dot = n[0]*s[0] + n[1]*s[1] + n[2]*s[2]
+def compute_power(n, s, noise_std, rng=None):
+    """
+    Power(P) we read from the sensor of the dish. In our model we calculate P as the inner product
+    of the sun vector(s) and the dish vector(n).
+    """
+    dot = n[0]*s[0] + n[1]*s[1] + n[2]*s[2]
+    P = max(0.0, float(dot))
 
-        # make sure P is greater than 0
-        P = max(0.0, float(dot))
+    # take potential power sensor noise
+    if noise_std > 0.0:
+        # use env's RNG if provided; fall back to global np.random
+        if rng is None:
+            noise = np.random.normal(0.0, float(noise_std))
+        else:
+            noise = rng.normal(0.0, float(noise_std))
+        P += noise
+        P = float(np.clip(P, 0.0, 1.0))
 
-        # take potential power sensor noise
-        if noise_std and noise_std > 0.0:
-            # P = P(without noise) + noise(follows N(0, noise_std))
-            P += np.random.normal(0.0, float(noise_std))
-            P = float(np.clip(P, 0.0, 1.0))
-        return P
+    return P
+
 
 class DishSim:
     def __init__(self, lat_deg=40.64, lon_deg=22.94, dt=0.5, start_dt_utc=None):
@@ -188,7 +190,7 @@ class SunDishEnv(gym.Env):
         # get sun vector from sim
         s = self.sim.sun_vec()
 
-        self.P = compute_power(n, s, noise_std = self.noise_std)
+        self.P = compute_power(n, s, noise_std=self.noise_std, rng=self.np_random)
         self.last_P = self.P
 
         # return the observation with the values after reset
@@ -198,7 +200,7 @@ class SunDishEnv(gym.Env):
         """
         Here is where our simulation actually takes our recomended action and runs the simulation and updates the state,
         gives the new power reading at the new position, advances time and gives ur our reward as feedback for the training.
-        """
+        """  
          # 1) scale action -> commanded speeds
         action = np.asarray(action, dtype=np.float32)
         action = np.clip(action, -1.0, 1.0)
@@ -219,7 +221,7 @@ class SunDishEnv(gym.Env):
         # 4) read Sun at the NEW time and compute power at end of step
         s = self.sim.sun_vec()                 # ŝ(t + dt)
         self.last_P = self.P
-        self.P = compute_power(n, s, self.noise_std)
+        self.P = compute_power(n, s, noise_std=self.noise_std, rng=self.np_random)
 
         # 5) reward & done
         reward = float(self.P)

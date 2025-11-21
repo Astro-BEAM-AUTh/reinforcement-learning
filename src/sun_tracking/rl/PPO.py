@@ -103,15 +103,14 @@ def main()->None:
         seed=42,
     )
 
-    total_steps = 630000
+    total_steps = 1000000
     model.learn(total_timesteps=total_steps)
 
     os.makedirs("models", exist_ok=True)
-    model.save("models/ppo_sun_dish")
+    model.save("models/ppo_sun_dish_candidate_best")
 
     # --- NEW: multi-episode evaluation ---
-    evaluate_policy_multi_episodes(model, n_episodes=50, noise_std=0.0, seed=999)
-
+    evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.01, seed=999)
 
 if __name__ == "__main__":
     main()
