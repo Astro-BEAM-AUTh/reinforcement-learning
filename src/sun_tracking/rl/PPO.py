@@ -6,26 +6,86 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from sun_tracking.envs.dish_env import SunDishEnv
 
+# ---------- ENV FACTORIES ----------
 
-def make_env(seed=0):
+def make_train_env(seed: int=0)->Monitor:
+    """Environment used for training (with sensor noise)."""
     env = SunDishEnv(
         dt=0.5,
         v_max_deg_s=10.0,
         tau=0.3,
-        noise_std=0.01,
-        horizon_s=90.0,  # 90 s time limit
+        noise_std=0.01,   # keep noise during training for robustness
+        horizon_s=90.0,   # 90 s time limit
         seed=seed,
     )
-    return Monitor(env) 
+    return Monitor(env)
 
-def main():
 
+def make_eval_env(seed: int = 0, noise_std: int = 0.0)->Monitor:
+    """Environment used for evaluation (optionally noise-free)."""
+    env = SunDishEnv(
+        dt=0.5,
+        v_max_deg_s=10.0,
+        tau=0.3,
+        noise_std=noise_std,  # usually 0.0 for clean eval
+        horizon_s=90.0,
+        seed=seed,
+    )
+    return Monitor(env)
+
+
+# ---------- EVALUATION FUNCTION ----------
+
+def evaluate_policy_multi_episodes(model, n_episodes: int=50, noise_std:float=0.0,
+                                   seed: int=123)->tuple[float, float, float]:
+    """
+    Run several eval episodes and print average stats.
+    - model: trained PPO model
+    - n_episodes: how many episodes to average over
+    - noise_std: 0.0 for clean eval, >0 if you want noisy eval.
+    """
+    eval_env = make_eval_env(seed=seed, noise_std=noise_std)
+
+    returns = []
+    last_powers = []
+
+    for _ep in range(n_episodes):
+        obs, info = eval_env.reset()
+        total_r = 0.0
+
+        while True:
+            # deterministic = no exploration noise
+            action, _ = model.predict(obs, deterministic=True)
+            obs, r, terminated, truncated, info = eval_env.step(action)
+            total_r += float(r)
+
+            if terminated or truncated:
+                # store final power and episode return
+                last_powers.append(float(info.get("power", 0.0)))
+                returns.append(total_r)
+                break
+    power_threshold = 0.95 # if we have power above 95% we have found the sun
+    avg_return = sum(returns) / len(returns)
+    avg_last_power = sum(last_powers) / len(last_powers)
+    success_rate = sum(1 for p in last_powers if p > power_threshold) / len(last_powers)
+
+    print(f"Eval over {n_episodes} episodes (noise_std={noise_std}):")
+    print(f"  Avg total reward   : {avg_return:.2f}")
+    print(f"  Avg last power     : {avg_last_power:.4f}")
+    print(f"  Success rate (last_power > 0.95): {success_rate * 100:.1f}%")
+
+    # return them too if you want to log/use them
+    return avg_return, avg_last_power, success_rate
+
+
+# ---------- MAIN ----------
+
+def main()->None:
     # makes the gym env look like a vector of size 1 so SB3 can use it
-    env = DummyVecEnv([lambda: make_env(seed=42)])
+    env = DummyVecEnv([lambda: make_train_env(seed=42)])
 
     # policy is a neural network with 2 layers and 128 neurons each
-    policy_kwargs = dict(net_arch=[128, 128])
-
+    policy_kwargs = {"net_arch": [128, 128]}
 
     # this is the model we train
     model = PPO(
@@ -43,23 +103,15 @@ def main():
         seed=42,
     )
 
-    total_steps = 63000
+    total_steps = 630000
     model.learn(total_timesteps=total_steps)
+
     os.makedirs("models", exist_ok=True)
     model.save("models/ppo_sun_dish")
 
-    # quick deterministic eval rollout
-    eval_env = make_env(seed=123)
-    obs, info = eval_env.reset()
-    total_r = 0.0
-    while True:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, r, terminated, truncated, info = eval_env.step(action)
-        total_r += float(r)
-        if terminated or truncated:
-            break
-    print("Eval → last power:", round(info.get("power", 0.0), 4), "| total reward:", round(total_r, 2))
+    # --- NEW: multi-episode evaluation ---
+    evaluate_policy_multi_episodes(model, n_episodes=50, noise_std=0.0, seed=999)
+
 
 if __name__ == "__main__":
     main()
-
