@@ -1,6 +1,5 @@
 import math
 from datetime import datetime, timedelta
-from typing import Tuple
 
 from astral import sun
 from astral.location import LocationInfo

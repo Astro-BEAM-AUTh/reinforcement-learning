@@ -1,0 +1,386 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{siunitx}
+
+% Page layout
+\geometry{margin=1in}
+
+% Hyperlink colors
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue
+}
+
+\title{Reinforcement Learning for Sun Tracking}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the simulation environment used to train a reinforcement learning (RL) agent for solar tracking. 
+It explains how the Sun is modeled, how the dish moves, and how the power signal is computed. 
+The goal is to create a simple but realistic setup in which an RL algorithm can learn to point a dish toward the Sun.
+\end{abstract}
+
+\section{Introduction}
+
+This project explores a simple reinforcement learning (RL) approach for solar tracking.  
+The goal is for an agent to learn how to orient a dish so that it points towards the center of the Sun, using only power sensor readings and its own motion commands.  
+We build a simulation that includes:
+\begin{itemize}
+    \item a model of the Sun's position over time,
+    \item a basic physical model of the dish,
+    \item a power measurement based on how well the dish aligns with the Sun,
+    \item a Gym-style environment for training an RL agent.
+\end{itemize}
+
+The reward is the measured power coming from the Sun, so the agent learns to move the dish in a way that maximizes this value.  
+The following sections describe the simulation components that make up the environment.
+
+
+\section{Sun Model}
+
+The Sun's position is computed using the Astral library, based on a geographic location and the current UTC time.  
+Astral provides the Sun's azimuth (degrees clockwise from North) and elevation (degrees above the horizon).  
+These angles are then converted into a unit vector expressed in a local East--North--Up (ENU) coordinate frame.
+
+\subsection{Conversion to ENU Vector}
+
+Given an azimuth angle $\mathrm{az}$ and an elevation angle $\mathrm{el}$ (both in radians), the corresponding unit vector
+$\mathbf{s} = (s_x, s_y, s_z)$ is computed as:
+\begin{equation}
+\label{eq:enu}
+s_x = \cos(\mathrm{el}) \cos(\mathrm{az}), \qquad
+s_y = \cos(\mathrm{el}) \sin(\mathrm{az}), \qquad
+s_z = \sin(\mathrm{el}).
+\end{equation}
+
+This vector points from the dish location toward the Sun at the given moment in time(our point of reference in the simulation is the dish).
+
+\subsection{Time Update}
+
+The simulation keeps track of time in seconds.  
+At each step, the current UTC time is:
+\begin{equation}
+t_{\text{now}} = t_{\text{start}} + \Delta t,
+\end{equation}
+where $\Delta t$ is the elapsed simulation time.  
+
+The Sun vector $\mathbf{s}(t)$ is recomputed at every step using Astral and the
+ENU conversion formula shown in Equation~\ref{eq:enu}.
+
+\section{Dish Dynamics Model}
+
+The dish is modeled with two angles: azimuth $\mathrm{az}$ and elevation $\mathrm{el}$.  
+Each angle has an angular velocity, $\dot{\mathrm{az}}$ and $\dot{\mathrm{el}}$.  
+The reinforcement learning agent controls the dish by outputting two values, one for azimuth angular velocity and one for elevation angular velocity.  
+These values are interpreted as the \emph{commanded angular velocities} that the motors should try to reach.
+
+\subsection{Motor Lag Model}
+
+Let $v_{\text{cmd}}$ be the commanded angular velocity (either in azimuth or elevation) produced by the RL agent.  
+Because real motors cannot change speed instantly, the actual angular velocity follows a simple first-order response:
+
+\begin{equation}
+\label{eq:lag}
+x \leftarrow x + \left( v_{\text{cmd}} - x \right) \frac{\Delta t}{\tau},
+\end{equation}
+
+where $x$ represents $\dot{\mathrm{az}}$ or $\dot{\mathrm{el}}$,  
+$\Delta t$ is the simulation time step,  
+and $\tau$ is the motor time constant.
+
+\subsection{Angle Integration}
+
+After the angular velocities are updated, the angles themselves are integrated:
+
+\begin{equation}
+\label{eq:az_update}
+\mathrm{az} \leftarrow \mathrm{wrap}\left( \mathrm{az} + \dot{\mathrm{az}} \, \Delta t \right),
+\end{equation}
+
+\begin{equation}
+\label{eq:el_update}
+\mathrm{el} \leftarrow \mathrm{clip}\left( \mathrm{el} + \dot{\mathrm{el}} \, \Delta t \right).
+\end{equation}
+
+Azimuth is wrapped to stay within $[-\pi, \pi]$,  
+while elevation is clipped so the dish does not point below the horizon.
+
+\subsection{Dish Pointing Vector}
+
+The dish orientation is represented as a unit vector $\mathbf{n}$ in the East--North--Up frame:
+
+\begin{equation}
+\label{eq:n_vector}
+n_x = \cos(\mathrm{el}) \cos(\mathrm{az}), \qquad
+n_y = \cos(\mathrm{el}) \sin(\mathrm{az}), \qquad
+n_z = \sin(\mathrm{el}).
+\end{equation}
+
+This vector defines the direction the dish is currently facing.
+
+\section{Power Measurement Model}
+
+The dish receives power based on how well it is aligned with the Sun.  
+Both the dish direction $\mathbf{n}$ and the Sun direction $\mathbf{s}$ are represented as unit vectors in the East--North--Up frame.  
+The measured power is computed using their dot product.
+
+\subsection{Ideal Power Without Noise}
+
+The ideal (noise-free) power value is:
+
+\begin{equation}
+\label{eq:power_dot}
+P = \max\left(0,\; \mathbf{n} \cdot \mathbf{s} \right),
+\end{equation}
+
+which ensures that power is zero when the dish points away from the Sun.  
+The dot product reaches $1$ when the dish is perfectly aligned with the Sun(dish looking exactly at the sun's center).
+
+\subsection{Power Sensor Noise}
+
+A small amount of noise is added to simulate measurement uncertainty.  
+If the noise standard deviation is $\sigma$, then the final measured power is:
+
+\begin{equation}
+\label{eq:noise}
+P \leftarrow \mathrm{clip}\left( P + \varepsilon \right),
+\qquad
+\varepsilon \sim \mathcal{N}(0, \sigma^2),
+\end{equation}
+
+where the value is clipped to stay within the range $[0, 1]$.  
+This noise term helps make the environment slightly more realistic and prevents the agent from relying on perfectly smooth measurements.
+
+\section{Reinforcement Learning Environment}
+
+The simulation is wrapped in a Gym-style environment so that an RL agent can interact with it.  
+At each step, the agent observes the current state, outputs its action, and receives a reward based on how well the dish aligns with the Sun.
+
+\subsection{Observation Space}
+
+The environment provides a six-dimensional observation vector:
+
+\begin{equation}
+o = 
+\left[
+\mathrm{az},\;
+\mathrm{el},\;
+\dot{\mathrm{az}},\;
+\dot{\mathrm{el}},\;
+P,\;
+\Delta P
+\right],
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\mathrm{az}$ and $\mathrm{el}$ are the dish angles,
+    \item $\dot{\mathrm{az}}$ and $\dot{\mathrm{el}}$ are the angular velocities,
+    \item $P$ is the measured power,
+    \item $\Delta P = P - P_{\text{prev}}$ is the change in power.
+\end{itemize}
+
+The value $\Delta P$ helps indicate whether the dish is moving toward or away from the Sun.
+
+\subsection{Action Space}
+
+The agent outputs two continuous values:
+
+\begin{equation}
+a = [a_{\text{az}},\; a_{\text{el}}], \qquad a_{\text{az}}, a_{\text{el}} \in [-1, 1].
+\end{equation}
+
+These values do not represent angles.  
+Instead, each one specifies how fast the agent wants the dish to rotate.  
+They are converted into commanded angular velocities by scaling with the maximum motor speed $v_{\max}$:
+
+\begin{equation}
+v_{\text{cmd}} = a \cdot v_{\max}.
+\end{equation}
+
+For example, an action of $1.0$ means ``rotate at the maximum speed'',  
+$0.0$ means ``do not rotate'',  
+and $-1.0$ means ``rotate at maximum speed in the opposite direction''.  
+The commanded velocities are then used in the motor lag model.
+
+\subsection{Reward Function}
+
+The reward at each step is the measured power:
+
+\begin{equation}
+r = P.
+\end{equation}
+
+Maximizing this reward encourages the agent to orient the dish so that it points directly at the Sun.
+
+\subsection{Episode Termination}
+
+Episodes run for a fixed amount of simulated time.  
+Let $T_{\max}$ be the maximum allowed duration.  
+After every simulation step, the elapsed time increases by $\Delta t$.  
+The episode continues as long as:
+
+\begin{equation}
+t_{\text{episode}} \le T_{\max}.
+\end{equation}
+
+Once the elapsed time exceeds $T_{\max}$, the episode ends.  
+There is no separate success or failure condition; the goal is simply to track the Sun over this fixed time period.
+
+\subsection{Timing and Control Frequency}
+
+Each environment step corresponds to a fixed simulation time step $\Delta t$.  
+In this project, we use:
+\begin{equation}
+\Delta t = 0.5 \text{ seconds}.
+\end{equation}
+
+This means the reinforcement learning agent produces a \emph{new action every 0.5 seconds}.  
+Each action specifies the desired angular velocities for that 0.5 seconds interval, and the dish dynamics update accordingly.  
+The angle change in each step is determined by:
+
+\begin{equation}
+\Delta \mathrm{az} = \dot{\mathrm{az}} \cdot \Delta t, \qquad
+\Delta \mathrm{el} = \dot{\mathrm{el}} \cdot \Delta t,
+\end{equation}
+
+where $\dot{\mathrm{az}}$ and $\dot{\mathrm{el}}$ are the actual motor speeds after applying the motor lag model.  
+Thus, the dish motion depends both on the agent's commanded velocities and on the physical time step.
+
+Since episodes last $T_{\max}$ seconds and each step lasts $\Delta t$ seconds, each episode contains:
+
+\begin{equation}
+N_{\text{steps}} = \frac{T_{\max}}{\Delta t}
+\end{equation}
+
+decision points for the agent.  
+For example, with $T_{\max} = 90$ seconds and $\Delta t = 0.5$ seconds, each episode contains 180 steps.
+
+\section{Reinforcement Learning Algorithm}
+
+To learn how to orient the dish toward the Sun, we use the Proximal Policy Optimization (PPO) algorithm from the Stable-Baselines3 library.  
+PPO is well suited for continuous control and is stable enough to train on noisy observations.
+
+\subsection{Policy Network}
+
+The policy and value networks are standard multilayer perceptrons.  
+They take the six-dimensional observation vector as input and output the two commanded angular velocities (after normalization).
+
+The network architecture is:
+
+\begin{itemize}
+    \item Two fully connected hidden layers
+    \item 128 neurons per layer
+    \item ReLU activation functions
+\end{itemize}
+
+This architecture is specified as:
+\begin{equation}
+\text{net\_arch} = [128, 128].
+\end{equation}
+
+\subsection{Training Setup}
+
+The environment is wrapped in a monitor and a vectorized environment wrapper so that PPO can collect rollouts.  
+The main hyperparameters are:
+
+The main hyperparameters are:
+
+\begin{itemize}
+    \item Learning rate: $3 \times 10^{-4}$
+    \item Discount factor: $\gamma = 0.99$
+    \item GAE parameter: $\lambda = 0.95$
+    \item Rollout length: 1024 steps (this means PPO collects 1024 environment steps before updating the policy)
+    \item Batch size: 256 (this is how many samples are used at once during a gradient update)
+    \item Entropy coefficient: 0.0
+\end{itemize}
+
+
+The model is trained for:
+\begin{equation}
+1{,}000{,}000 \text{ timesteps}.
+\end{equation}
+
+During training, the sensor noise is enabled \texttt{(noise\_std = 0.01)} to make the policy robust to measurement imperfections.
+
+\subsection{Training Environment Parameters}
+
+Each environment used for training has the following parameters:
+
+\begin{itemize}
+    \item Simulation timestep: $\Delta t = 0.5$ seconds
+    \item Maximum motor speed: $10^\circ$/s
+    \item Motor lag constant: $\tau = 0.3$
+    \item Sensor noise: $0.01$
+    \item Episode horizon: $T_{\max} = 90$ seconds
+\end{itemize}
+
+At each simulation step, the agent outputs a new velocity command for azimuth and elevation.  
+The dish motion is integrated over $\Delta t = 0.5$ seconds, so the agent makes 180 decisions per episode.
+
+\subsection{Evaluation Procedure}
+
+After training, the policy is evaluated over multiple episodes using a separate evaluation function.  
+For each evaluation episode, we compute:
+
+\begin{itemize}
+    \item Total episode reward,
+    \item The final power measurement,
+    \item The average power over the last $k$ steps (the ``tail average'').
+\end{itemize}
+
+The tail average is used because it is more stable than a single noisy final reading.  
+A policy is considered successful if the tail average exceeds $0.95$, meaning the dish is almost perfectly aligned during the end of the episode.
+
+\subsection{Multi-Seed Training}
+
+To test the consistency and reliability of the PPO method, we repeat the full training process with several different random seeds.  
+For each seed:
+
+\begin{enumerate}
+    \item A new PPO model is trained for 1,000,000 steps.
+    \item The model is saved to disk.
+    \item The model is evaluated in two conditions:
+    \begin{itemize}
+        \item Clean evaluation (\texttt{noise\_std = 0.0}),
+        \item Noisy evaluation (\texttt{noise\_std = 0.01}).
+    \end{itemize}
+\end{enumerate}
+
+Each evaluation runs over many episodes (typically 200) to obtain stable statistics.  
+For every seed, we record:
+
+\begin{itemize}
+    \item Average episode return,
+    \item Average tail power,
+    \item Success rate (fraction of episodes with tail power $> 0.95$).
+\end{itemize}
+
+\subsection{Success Rate Comparison Across Seeds}
+
+After all seeds are trained, the success rates are plotted to show how training stability varies with random initialization.  
+The plot shows, for each seed:
+
+\begin{itemize}
+    \item Success rate in the clean environment,
+    \item Success rate in the noisy environment.
+\end{itemize}
+
+This multi-seed experiment provides a clearer picture of how reliable the learned controller is and how sensitive training is to randomness in initialization and environment conditions.
+
+
+
+
+\end{document}

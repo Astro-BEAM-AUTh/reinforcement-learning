@@ -14,7 +14,7 @@ def make_train_env(seed: int=0)->Monitor:
         dt=0.5,
         v_max_deg_s=10.0,
         tau=0.3,
-        noise_std=0.01,   # keep noise during training for robustness
+        noise_std=0,   # keep noise during training for robustness
         horizon_s=90.0,   # 90 s time limit
         seed=seed,
     )
