@@ -17,7 +17,7 @@ Create a new RL environment for training a satellite dish to track the sun using
    - **No hard edges** - gain decreases smoothly with distance from beam center
 
 2. **Sun**
-   - Modeled as a **circular disk** (not a point!)
+   - Modeled as a **circular disk** 
    - **Angular diameter**: 0.53°
    - **Radius**: 0.265°
    - Every point on the sun disk contributes to total received power
