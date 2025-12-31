@@ -6,9 +6,12 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from sun_tracking.envs.dish_env import SunDishEnv
 
+# Constants
+SUCCESS_POWER_THRESHOLD = 0.95  # Power threshold for considering sun tracking successful
+
 # ---------- ENV FACTORIES ----------
 
-def make_train_env(seed: int=0)->Monitor:
+def make_train_env(seed: int = 0) -> Monitor:
     """Environment used for training (with sensor noise)."""
     env = SunDishEnv(
         dt=0.5,
@@ -21,7 +24,7 @@ def make_train_env(seed: int=0)->Monitor:
     return Monitor(env)
 
 
-def make_eval_env(seed: int = 0, noise_std: int = 0.0)->Monitor:
+def make_eval_env(seed: int = 0, noise_std: int = 0.0) -> Monitor:
     """Environment used for evaluation (optionally noise-free)."""
     env = SunDishEnv(
         dt=0.5,
@@ -37,7 +40,7 @@ def make_eval_env(seed: int = 0, noise_std: int = 0.0)->Monitor:
 # ---------- EVALUATION FUNCTION ----------
 
 def evaluate_policy_multi_episodes(
-    model,
+    model: PPO,
     n_episodes: int = 50,
     noise_std: float = 0.0,
     seed: int = 123,
@@ -58,7 +61,7 @@ def evaluate_policy_multi_episodes(
     last_powers = []      # single final power (for debugging)
     tail_powers = []      # average over last tail_k rewards
 
-    for ep in range(n_episodes):
+    for _ in range(n_episodes):
         obs, info = eval_env.reset()
         total_r = 0.0
         rewards_hist = []
@@ -87,13 +90,13 @@ def evaluate_policy_multi_episodes(
     avg_tail_power = sum(tail_powers) / len(tail_powers)
 
     # success based on *tail average* instead of one noisy sample
-    success_rate = sum(1 for p in tail_powers if p > 0.95) / len(tail_powers)
+    success_rate = sum(1 for p in tail_powers if p > SUCCESS_POWER_THRESHOLD) / len(tail_powers)
 
     print(f"Eval over {n_episodes} episodes (noise_std={noise_std}):")
     print(f"  Avg total reward            : {avg_return:.2f}")
     print(f"  Avg last power (single step): {avg_last_power:.4f}")
     print(f"  Avg tail power (last {tail_k} steps): {avg_tail_power:.4f}")
-    print(f"  Success (tail_avg > 0.95)   : {success_rate * 100:.1f}%")
+    print(f"  Success (tail_avg > {SUCCESS_POWER_THRESHOLD})   : {success_rate * 100:.1f}%")
 
     return avg_return, avg_tail_power, success_rate
 
@@ -101,7 +104,7 @@ def evaluate_policy_multi_episodes(
 
 # ---------- MAIN ----------
 
-def main()->None:
+def main() -> None:
     # makes the gym env look like a vector of size 1 so SB3 can use it
     env = DummyVecEnv([lambda: make_train_env(seed=42)])
 

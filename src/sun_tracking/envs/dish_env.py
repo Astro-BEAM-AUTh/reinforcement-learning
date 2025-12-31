@@ -9,14 +9,17 @@ from sun_tracking.sky_objects.sun_model import sun_vector
 
 
 def _wrap_pi(a):
+    """Wrap angle to [-π, π] range."""
     return ((a + math.pi) % (2.0 * math.pi)) - math.pi
 
 def _clip_el(el) -> float:
+    """Clip elevation angle to [0, π/2] range (horizon to zenith)."""
     return float(np.clip(el, 0.0, math.pi / 2.0))
 
 
 # change the coordinates (az, el) to (x, y, z)
 def compute_n_from_angles(az, el):
+    """Convert azimuth and elevation angles to unit vector in ENU coordinates."""
     x = math.cos(el) * math.cos(az)  # East
     y = math.cos(el) * math.sin(az)  # North
     z = math.sin(el)                 # Up
@@ -76,6 +79,14 @@ def compute_power(n, s, noise_std, rng=None):
 
 
 class DishSim:
+    """Simulate sun position over time at a given geographic location.
+    
+    Args:
+        lat_deg: Latitude in degrees
+        lon_deg: Longitude in degrees
+        dt: Time step in seconds
+        start_dt_utc: Starting datetime (UTC timezone-aware)
+    """
     def __init__(self, lat_deg=40.64, lon_deg=22.94, dt=0.5, start_dt_utc=None):
         self.lat = float(lat_deg)
         self.lon = float(lon_deg)
@@ -98,7 +109,7 @@ class DishSim:
 class SunDishEnv(gym.Env):
     """
     Creating a simple gym Env. 
-    - actions: change the velocity's in azimouth and elavation normalized. So [v_az, v_el] in[-1,1]
+    - actions: change the velocities in azimuth and elevation normalized. So [v_az, v_el] in[-1,1]
     - obs: [az, el, az_dot, el_dot, P, dP]
     - reward: P (we want to find max P, aka center of the sun)
     """

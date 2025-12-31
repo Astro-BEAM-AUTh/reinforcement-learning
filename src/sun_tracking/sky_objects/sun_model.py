@@ -5,10 +5,10 @@ from astral import sun
 from astral.location import LocationInfo
 
 
-# this function takes (azimouth, elevation) and returns a vector n = (x, y, z) where |n|=1
-def convert_az_el_to_enu_coordinates(azimouth, elevation):  # noqa: ANN201
+# this function takes (azimuth, elevation) and returns a vector n = (x, y, z) where |n|=1
+def convert_az_el_to_enu_coordinates(azimuth, elevation):  # noqa: ANN201
     # shift 0 from North(standard) to East(+x)
-    az_east_ccw = math.radians(90.0-azimouth)
+    az_east_ccw = math.radians(90.0-azimuth)
     el = math.radians(elevation)
 
     x = math.cos(el) * math.cos(az_east_ccw)  # East

@@ -98,6 +98,10 @@ celerybeat.pid
 
 # Model files
 models/
+
+# Experiment outputs
+runs/
+results/
 checkpoints/
 *.zip
 
