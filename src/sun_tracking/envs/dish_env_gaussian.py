@@ -16,6 +16,9 @@ SUN_DIAMETER_DEG = 0.53    # Angular diameter of the sun
 SUN_RADIUS_DEG = 0.265     # Sun radius (half diameter)
 SIGMA_DEG = 1.03           # Gaussian width parameter (FWHM/2.355)
 
+# Reward shaping parameters
+REWARD_POWER_IMPROVEMENT_SCALE = 1000.0  # Scale for power improvement reward
+
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -168,8 +171,10 @@ def step_with_lag(az, el, az_dot, el_dot, v_az_cmd, v_el_cmd, dt, v_max, tau):
     v_el_cmd = float(np.clip(v_el_cmd, -v_max, v_max))
     
     # First-order lag: velocity moves toward commanded value
-    az_dot = az_dot + (v_az_cmd - az_dot) * (dt / tau)
-    el_dot = el_dot + (v_el_cmd - el_dot) * (dt / tau)
+    # Clamp alpha to [0, 1] for numerical stability when dt/tau > 1
+    alpha = min(1.0, dt / tau)
+    az_dot = az_dot + (v_az_cmd - az_dot) * alpha
+    el_dot = el_dot + (v_el_cmd - el_dot) * alpha
     
     # Integrate angles
     az = _wrap_pi(az + az_dot * dt)
@@ -305,9 +310,24 @@ class GaussianBeamDishEnv(gym.Env):
             if s_try[2] > 0.0:  # Sun above horizon
                 break
         
-        # Random initial dish angles
-        self.az = float(self.np_random.uniform(-math.pi, math.pi))
-        self.el = float(self.np_random.uniform(math.radians(2.0), math.pi/2 - math.radians(2.0)))
+        # Get sun position
+        s = self.sim.sun_vec()
+        sun_az = math.atan2(s[1], s[0])
+        sun_el = math.asin(s[2])
+        
+        # Start within 3 degrees of sun (matches Run 6 configuration)
+        max_offset_deg = 3.0
+        offset_az = self.np_random.uniform(-max_offset_deg, max_offset_deg)
+        offset_el = self.np_random.uniform(-max_offset_deg, max_offset_deg)
+        
+        self.az = sun_az + math.radians(offset_az)
+        self.el = sun_el + math.radians(offset_el)
+        
+        # Clip elevation to valid range [0, π/2]
+        self.el = _clip_el(self.el)
+        # Wrap azimuth to [-π, π]
+        self.az = _wrap_pi(self.az)
+        
         self.az_dot = 0.0
         self.el_dot = 0.0
         
@@ -357,13 +377,23 @@ class GaussianBeamDishEnv(gym.Env):
         self.last_P = self.P
         self.P = compute_gaussian_power(d_x, d_y, noise_std=self.noise_std, rng=self.np_random)
         
-        # Reward is the power
-        reward = float(self.P)
+        # Compute pure power improvement reward
+        angular_distance = math.sqrt(d_x**2 + d_y**2)
+        
+        # Reward power improvement (not absolute power)
+        # Moving toward sun → ΔP positive → positive reward
+        # Moving away from sun → ΔP negative → negative reward
+        power_improvement = float(self.P - self.last_P)
+        reward = REWARD_POWER_IMPROVEMENT_SCALE * power_improvement
         
         # Episode termination
         terminated = False
         truncated = bool(self.elapsed >= self.horizon_s)
         
-        info = {"power": float(self.P)}
+        info = {
+            "power": float(self.P),
+            "angular_distance": float(angular_distance),
+            "power_improvement": float(power_improvement),
+        }
         
         return self._obs(), reward, terminated, truncated, info
