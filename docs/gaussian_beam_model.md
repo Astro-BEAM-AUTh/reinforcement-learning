@@ -811,3 +811,205 @@ This gives:
 
 **Conclusion**: Must fix BOTH bugs to recover Run 6 performance.
 
+---
+
+## ✅ **ENVIRONMENT FIXES APPLIED** - Jan 1, 2026
+
+### Fix #1: Stable Lag Dynamics
+
+**Code Change** in `step_with_lag()`:
+```python
+# Old (unstable when dt/tau > 1):
+az_dot = az_dot + (v_az_cmd - az_dot) * (dt / tau)
+
+# New (stable - clamps gain to prevent overshoot):
+alpha = min(1.0, dt / tau)  # Clamp to [0, 1]
+az_dot = az_dot + (v_az_cmd - az_dot) * alpha
+```
+
+**Verification**:
+- Before: action=0.1 → velocity overshoots to 1.67°/s (1.67× commanded)
+- After: action=0.1 → velocity exactly 1.0°/s (matches commanded) ✓
+
+### Fix #2: Initialization Distance
+
+**Code Change** in `reset()`:
+```python
+# Old:
+max_offset_deg = 1.0  # Too close, 75% initial power
+
+# New:
+max_offset_deg = 3.0  # Matches Run 6, ~1-2% initial power
+```
+
+### Comprehensive Environment Validation
+
+Ran 6 tests to verify environment is working:
+
+1. ✅ **Basic Functionality**: 100 steps without crashing
+2. ✅ **Power Gradient**: Moving toward sun gives +710 reward, away gives -86 reward
+3. ✅ **Action Magnitudes**: Scale correctly (0.0 → 0.0°, 1.0 → 5.0°)
+4. ✅ **Can Find Sun**: Gradient-following policy achieved **95.4% power** from 8.7% start
+5. ✅ **Multiple Episodes**: Varied initial conditions (power range: 1.5% to 56.6%)
+6. ✅ **Dynamics Stability**: Velocity = 5.00°/s (no overshoot) when commanding 5.00°/s
+
+**Conclusion**: Environment is fixed and ready for training!
+
+---
+
+### Run 10 - First Run with Fixed Environment ✅ **MAJOR IMPROVEMENT**
+**Date**: Jan 1, 2026  
+**Config**:
+- **3° initialization** (fixed from broken 1° config)
+- **Stable lag dynamics** (alpha clamping prevents overshoot)
+- Pure ΔP reward: `1000×ΔP` (no bonuses/penalties)
+- 1M steps, v_max=10°/s, dt=0.5s, τ=0.3s
+- Standard PPO: lr=3e-4, [128,128] network
+
+**Results**:
+- Training: ep_rew_mean improved from negative to **+29.3** (steady improvement!)
+- Evaluation (200 episodes, noise=0.01):
+  - Avg total reward: **+23.29** (vs -142.86 in Run 6)
+  - Avg tail power (last 100 steps): **11.81%** 🎯
+  - Success rate (>95% power): **0%**
+  - Policy std: 0.99 → 0.43 (healthy exploration maintained)
+
+**Key Insights**:
+- ✅ **Environment fixes work!** Training is stable and improving
+- ✅ **5× better than Run 6** (11.81% vs 2.31% tail power)
+- ✅ **Positive episode rewards** - agent is learning to track sun
+- ⚠️ **Still far from 95% target** - needs optimization
+
+**Why This Is Progress**:
+1. **Stable learning**: Reward curve improved throughout training (no collapse)
+2. **Meaningful power**: 11.81% average shows agent can partially track sun
+3. **Validation works**: Simple gradient policy achieved 95% in testing, so target is achievable
+4. **Clean baseline**: Can now iterate on reward/config to improve further
+
+**What's Still Missing**:
+- Final power plateau around 12% - not reaching optimal alignment
+- Agent may need:
+  - More training time (3M steps?)
+  - Finer control (reduce v_max from 10°/s to 5°/s?)
+  - Easier start position (5° init for curriculum learning?)
+  - Better reward shaping (though pure ΔP should work in theory)
+
+**Next Steps**:
+- Run 11: Increase to **3M steps**, start at **5° offset** (easier curriculum), reduce **v_max to 5°/s** (finer control)
+- Keep pure ΔP reward (no distance bonus yet - want to see if more training helps first)
+
+---
+
+### Run 11 - Extended Training with 5° Start ❌ **FAILED - WORSE THAN RUN 10**
+**Date**: Jan 1, 2026  
+**Config Changes from Run 10**:
+- **5° initialization** (vs 3° in Run 10) - tested easier starting point
+- **v_max = 5°/s** (vs 10°/s) - finer control, slower movements
+- **3M steps** (vs 1M) - 3× more training time
+- Keep: pure ΔP reward, stable dynamics, same PPO hyperparameters
+
+**Results**:
+- Training: ep_rew_mean fluctuated 20-30 early, **ended at -0.4** (collapsed!)
+- Evaluation (200 episodes, noise=0.01):
+  - Avg total reward: **+13.29** (vs +23.29 in Run 10)
+  - Avg tail power (last 100 steps): **8.53%** ❌
+  - Success rate (>95% power): **0%**
+  - Policy std: 1.01 → **0.21** (exploration collapsed!)
+
+**Why It Failed**:
+
+1. **5° initialization was COUNTERPRODUCTIVE**:
+   - Power at 5° offset: ~0.06% (almost zero)
+   - ΔP signals are tiny - agent barely gets feedback
+   - At 3° offset: power ~1-2% (10-20× stronger signals!)
+   - Gradient too weak to learn effectively
+
+2. **Curriculum hypothesis was wrong**:
+   - "Start far, learn basics" doesn't work when signals are too weak
+   - Agent needs meaningful power gradients to learn
+   - 3° is the sweet spot: enough signal, enough exploration room
+
+3. **v_max=5°/s compounded the problem**:
+   - Slower movement = even smaller ΔP per step
+   - At 5° start with weak signals, agent couldn't find sun efficiently
+   - Combined effect: very slow learning with weak feedback
+
+4. **Policy collapse** (std: 1.01 → 0.21):
+   - Agent gave up exploring (std too low)
+   - Settled into local minimum of small random movements
+   - Never found good sun-tracking behavior
+
+**Key Insight**:
+- **Farther ≠ Easier** when reward signals depend on proximity
+- Need strong enough gradients for learning
+- 3° initialization provides best balance:
+  - Strong enough power signals (~1-2% base)
+  - Enough room to explore without catastrophic drops
+  - ΔP feedback sufficient for learning
+
+**Comparison to Run 10**:
+- Run 10 (1M, 3°, 10°/s): **11.81% tail power** ✓
+- Run 11 (3M, 5°, 5°/s): **8.53% tail power** ❌
+- Run 11 is **28% WORSE** despite 3× more training!
+
+**Conclusion**: 
+- 5° start hypothesis rejected
+- 3° initialization is superior
+- Need to keep strong ΔP gradients for learning
+
+---
+
+### Run 12 - Extended Training with Optimal Config ❌ **CATASTROPHIC FAILURE**
+**Date**: Jan 1, 2026  
+**Config**:
+- **3° initialization** (revert to Run 10 - best gradient strength)
+- **v_max = 5°/s** (keep finer control from Run 11)
+- **3M steps** (extended training time)
+- Pure ΔP reward: `1000×ΔP`, stable dynamics
+
+**Rationale**:
+- Run 10 showed 3° initialization works best (11.81% power in 1M steps)
+- Run 10 was still improving at 1M steps - needs more training time
+- Keep v_max=5°/s for finer control near optimal alignment
+- Hypothesis: 3M steps with good gradients will break through 20% barrier
+
+**RESULTS**:
+```
+Final Evaluation (3M steps, 200 episodes):
+  Avg total reward            : -18.71
+  Avg tail power (last 100 steps): 16.48%
+  Success rate (>95% power)   : 0.0%
+```
+
+**Performance Trajectory - CATASTROPHIC FORGETTING**:
+- **980K steps**: ep_rew_mean = +92, std = 0.67, **PEAK PERFORMANCE** 🎯
+- **1.57M steps**: ep_rew_mean = +10, std = 0.40, beginning collapse
+- **2.56M steps**: ep_rew_mean = -82 to -92, std = 0.19, **total collapse**
+- **3M steps (final)**: -18.71 reward, 16.48% power
+
+**What Went Wrong - PPO Catastrophic Forgetting**:
+1. **Agent learned well early** (peaked at +92 reward around 1M steps)
+2. **Continued training destroyed knowledge** - classic PPO failure mode
+3. **Exploration collapsed**: policy std dropped 0.67 → 0.19 (72% reduction)
+4. **Value function diverged**: massive value losses (>1000) late in training
+5. **High KL divergence** (0.019-0.021) indicates unstable policy updates
+
+**Root Cause**:
+- **Learning rate too aggressive for extended training** (3e-4 constant)
+- **No checkpointing** - best model at ~1M steps was never saved
+- **No early stopping** - training continued blindly past optimal point
+- **3M steps too long** for these hyperparameters without LR decay
+
+**Key Insight**: 
+PPO can learn well initially but then **overfit to recent experience** and forget good behaviors. The agent WAS finding the sun well at 1M steps (+92 reward), but continued optimization with aggressive LR caused policy to drift into bad local minimum. This isn't about needing more time to learn - it's about the optimization process itself becoming destructive.
+
+**Lesson Learned**:
+- 1M steps appears to be **optimal duration** for current hyperparameters
+- Extended training requires: LR scheduling, checkpointing, or early stopping
+- Or switch to more stable algorithms (SAC/TD3 with replay buffers)
+
+**Comparison**:
+- Run 10 (1M steps): 11.81% tail power, +29.3 final reward ✅
+- Run 12 (3M steps): 16.48% tail power, -18.71 final reward ❌
+- **Peak at 1M** would have been ~20-25% power (based on +92 reward)
+

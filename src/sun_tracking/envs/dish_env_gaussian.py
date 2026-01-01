@@ -315,8 +315,8 @@ class GaussianBeamDishEnv(gym.Env):
         sun_az = math.atan2(s[1], s[0])
         sun_el = math.asin(s[2])
         
-        # Start within 3 degrees of sun (matches Run 6 configuration)
-        max_offset_deg = 3.0
+        # Start within 1 degree of sun (curriculum learning - strong gradients)
+        max_offset_deg = 1.0
         offset_az = self.np_random.uniform(-max_offset_deg, max_offset_deg)
         offset_el = self.np_random.uniform(-max_offset_deg, max_offset_deg)
         

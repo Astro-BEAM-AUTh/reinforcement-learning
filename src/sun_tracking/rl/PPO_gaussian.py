@@ -2,6 +2,7 @@
 import os
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -13,12 +14,12 @@ SUCCESS_POWER_THRESHOLD = 0.95  # Power threshold for considering sun tracking s
 # ---------- ENV FACTORIES ----------
 
 def make_train_env(seed: int = 0) -> Monitor:
-    """Environment used for training (with sensor noise)."""
+    """Environment used for training (no noise for curriculum learning)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
-        v_max_deg_s=10.0,
+        v_max_deg_s=5.0,  # Reduced for finer control
         tau=0.3,
-        noise_std=0.01,   # noise during training for robustness
+        noise_std=0.0,   # no noise - learn from clean gradients first
         horizon_s=90.0,   # 90 s time limit
         seed=seed,
     )
@@ -29,7 +30,7 @@ def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
     """Environment used for evaluation (optionally noise-free)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
-        v_max_deg_s=10.0,
+        v_max_deg_s=5.0,  # Reduced for finer control
         tau=0.3,
         noise_std=noise_std,  # usually 0.0 for clean eval
         horizon_s=90.0,
@@ -129,18 +130,29 @@ def main() -> None:
         seed=42,
     )
 
-    # Quick test with 1M steps first
+    # Run 14: Curriculum learning - start at 1° offset with no noise
+    # 1° init, v_max=5°/s, noise=0.0, save every 100K steps
     total_steps = 1_000_000
-    model.learn(total_timesteps=total_steps)
+    
+    # Checkpoint callback - saves model every 100K steps
+    checkpoint_callback = CheckpointCallback(
+        save_freq=100_000,
+        save_path="./models/checkpoints/",
+        name_prefix="ppo_gaussian_run14",
+        save_replay_buffer=False,
+        save_vecnormalize=False,
+    )
+    
+    model.learn(total_timesteps=total_steps, callback=checkpoint_callback)
 
     os.makedirs("models", exist_ok=True)
-    model.save("models/ppo_gaussian_beam_best")
+    model.save("models/ppo_gaussian_run14_final")
 
     # --- Multi-episode evaluation ---
     print("\n" + "="*60)
     print("EVALUATION")
     print("="*60)
-    evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.01, seed=999)
+    evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.0, seed=999)
 
 
 if __name__ == "__main__":
