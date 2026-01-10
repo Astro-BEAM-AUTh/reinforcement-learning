@@ -249,7 +249,7 @@ class GaussianBeamDishEnv(gym.Env):
         lon_deg=22.94,
         dt=0.5,
         start_dt_utc=None,
-        v_max_deg_s=10.0,
+        v_max_deg_s=5.0,  # FIX 4: Reduced from 10 for smoother control
         tau=0.3,
         noise_std=0.01,
         horizon_s=90.0,
@@ -315,10 +315,12 @@ class GaussianBeamDishEnv(gym.Env):
         sun_az = math.atan2(s[1], s[0])
         sun_el = math.asin(s[2])
         
-        # Start within 1 degree of sun (curriculum learning - strong gradients)
-        max_offset_deg = 1.0
-        offset_az = self.np_random.uniform(-max_offset_deg, max_offset_deg)
-        offset_el = self.np_random.uniform(-max_offset_deg, max_offset_deg)
+        # Start at exactly 3 degrees from sun in random direction
+        # (ensures consistent difficulty and good gradients)
+        target_offset_deg = 3.0
+        angle = self.np_random.uniform(0, 2 * math.pi)  # Random direction
+        offset_az = target_offset_deg * math.cos(angle)
+        offset_el = target_offset_deg * math.sin(angle)
         
         self.az = sun_az + math.radians(offset_az)
         self.el = sun_el + math.radians(offset_el)
@@ -340,7 +342,7 @@ class GaussianBeamDishEnv(gym.Env):
         self.P = compute_gaussian_power(d_x, d_y, noise_std=self.noise_std, rng=self.np_random)
         self.last_P = self.P
         
-        return self._obs(), {}
+        return self._obs(), {"power": float(self.P)}
     
     def step(self, action):
         """
@@ -377,14 +379,19 @@ class GaussianBeamDishEnv(gym.Env):
         self.last_P = self.P
         self.P = compute_gaussian_power(d_x, d_y, noise_std=self.noise_std, rng=self.np_random)
         
-        # Compute pure power improvement reward
+        # FIX 2: Compute absolute power reward
+        # Using P directly incentivizes staying at high power (sustainable tracking)
         angular_distance = math.sqrt(d_x**2 + d_y**2)
-        
-        # Reward power improvement (not absolute power)
-        # Moving toward sun → ΔP positive → positive reward
-        # Moving away from sun → ΔP negative → negative reward
         power_improvement = float(self.P - self.last_P)
-        reward = REWARD_POWER_IMPROVEMENT_SCALE * power_improvement
+        
+        reward = float(self.P)
+        
+        # DEBUG: Print first few steps (remove after verification)
+        if not hasattr(self, '_debug_step_count'):
+            self._debug_step_count = 0
+        self._debug_step_count += 1
+        if self._debug_step_count <= 3:
+            print(f"[DEBUG Step {self._debug_step_count}] P={self.P:.6f}, reward={reward:.6f}")
         
         # Episode termination
         terminated = False

@@ -1,7 +1,8 @@
-"""PPO training for Gaussian beam sun tracking environment."""
+"""RecurrentPPO (LSTM) training for Gaussian beam sun tracking environment."""
 import os
 
-from stable_baselines3 import PPO
+import numpy as np
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -17,10 +18,10 @@ def make_train_env(seed: int = 0) -> Monitor:
     """Environment used for training (no noise for curriculum learning)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
-        v_max_deg_s=5.0,  # Reduced for finer control
+        v_max_deg_s=5.0,  # FIX 4: Reduced from 10 for smoother control
         tau=0.3,
         noise_std=0.0,   # no noise - learn from clean gradients first
-        horizon_s=90.0,   # 90 s time limit
+        horizon_s=180.0,  # 180 s time limit (more time to explore)
         seed=seed,
     )
     return Monitor(env)
@@ -30,10 +31,10 @@ def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
     """Environment used for evaluation (optionally noise-free)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
-        v_max_deg_s=5.0,  # Reduced for finer control
+        v_max_deg_s=5.0,  # FIX 4: Reduced from 10 for smoother control
         tau=0.3,
         noise_std=noise_std,  # usually 0.0 for clean eval
-        horizon_s=90.0,
+        horizon_s=180.0,  # 180 s time limit (more time to explore)
         seed=seed,
     )
     return Monitor(env)
@@ -42,16 +43,16 @@ def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
 # ---------- EVALUATION FUNCTION ----------
 
 def evaluate_policy_multi_episodes(
-    model: PPO,
+    model: RecurrentPPO,
     n_episodes: int = 50,
     noise_std: float = 0.0,
     seed: int = 123,
     tail_k: int = 100,
 ) -> tuple[float, float, float]:
     """
-    Evaluate a policy over multiple episodes.
+    Evaluate a RecurrentPPO policy over multiple episodes.
 
-    - model: trained PPO model
+    - model: trained RecurrentPPO model
     - n_episodes: how many episodes to average over
     - noise_std: sensor noise during eval
     - seed: seed for env (controls initial conditions)
@@ -65,12 +66,24 @@ def evaluate_policy_multi_episodes(
 
     for _ in range(n_episodes):
         obs, info = eval_env.reset()
+        # FIX 1: Reset LSTM states at episode start
+        lstm_states = None
+        episode_start = np.ones((1,), dtype=bool)
+        
         total_r = 0.0
         power_hist = []  # Track actual power, not reward
 
         while True:
-            action, _ = model.predict(obs, deterministic=True)
+            # FIX 1: Pass LSTM states to predict
+            action, lstm_states = model.predict(
+                obs, 
+                state=lstm_states,
+                episode_start=episode_start,
+                deterministic=True
+            )
             obs, r, terminated, truncated, info = eval_env.step(action)
+            episode_start = np.zeros((1,), dtype=bool)  # Only first step is episode start
+            
             r = float(r)
             total_r += r
             power_hist.append(float(info.get("power", 0.0)))  # Store actual power
@@ -107,16 +120,18 @@ def evaluate_policy_multi_episodes(
 # ---------- MAIN ----------
 
 def main() -> None:
-    """Train PPO on Gaussian beam sun tracking environment."""
+    """Train RecurrentPPO (LSTM) on Gaussian beam sun tracking environment."""
     # makes the gym env look like a vector of size 1 so SB3 can use it
     env = DummyVecEnv([lambda: make_train_env(seed=42)])
 
-    # policy is a neural network with 2 layers and 128 neurons each
-    policy_kwargs = {"net_arch": [128, 128]}
+    # FIX 1: Use LSTM policy with recurrent architecture
+    # LSTM allows agent to remember past observations (power trajectory)
+    # This is critical since we only observe power, not sun position
+    policy_kwargs = {"net_arch": [128, 128]}  # Hidden layers before LSTM
 
     # this is the model we train
-    model = PPO(
-        "MlpPolicy",
+    model = RecurrentPPO(
+        "MlpLstmPolicy",  # FIX 1: LSTM policy for memory
         env,
         policy_kwargs=policy_kwargs,
         learning_rate=3e-4,
@@ -130,15 +145,15 @@ def main() -> None:
         seed=42,
     )
 
-    # Run 14: Curriculum learning - start at 1° offset with no noise
-    # 1° init, v_max=5°/s, noise=0.0, save every 100K steps
+    # Run 16: RecurrentPPO with LSTM + absolute power reward + smoother control
+    # 3° init (exact ring), v_max=5°/s, 180s episodes, noise=0.0, save every 100K steps
     total_steps = 1_000_000
     
     # Checkpoint callback - saves model every 100K steps
     checkpoint_callback = CheckpointCallback(
         save_freq=100_000,
         save_path="./models/checkpoints/",
-        name_prefix="ppo_gaussian_run14",
+        name_prefix="recurrent_ppo_run16",
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
@@ -146,7 +161,7 @@ def main() -> None:
     model.learn(total_timesteps=total_steps, callback=checkpoint_callback)
 
     os.makedirs("models", exist_ok=True)
-    model.save("models/ppo_gaussian_run14_final")
+    model.save("models/recurrent_ppo_run16_final")
 
     # --- Multi-episode evaluation ---
     print("\n" + "="*60)
