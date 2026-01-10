@@ -249,7 +249,7 @@ class GaussianBeamDishEnv(gym.Env):
         lon_deg=22.94,
         dt=0.5,
         start_dt_utc=None,
-        v_max_deg_s=5.0,  # FIX 4: Reduced from 10 for smoother control
+        v_max_deg_s=2.0,  # FIX 4: Reduced from 10 for smoother control
         tau=0.3,
         noise_std=0.01,
         horizon_s=90.0,

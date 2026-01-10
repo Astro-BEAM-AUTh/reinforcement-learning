@@ -3,7 +3,7 @@ import os
 
 import numpy as np
 from sb3_contrib import RecurrentPPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -18,7 +18,7 @@ def make_train_env(seed: int = 0) -> Monitor:
     """Environment used for training (no noise for curriculum learning)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
-        v_max_deg_s=5.0,  # FIX 4: Reduced from 10 for smoother control
+        v_max_deg_s=2.0,
         tau=0.3,
         noise_std=0.0,   # no noise - learn from clean gradients first
         horizon_s=180.0,  # 180 s time limit (more time to explore)
@@ -31,7 +31,7 @@ def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
     """Environment used for evaluation (optionally noise-free)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
-        v_max_deg_s=5.0,  # FIX 4: Reduced from 10 for smoother control
+        v_max_deg_s=2.0,
         tau=0.3,
         noise_std=noise_std,  # usually 0.0 for clean eval
         horizon_s=180.0,  # 180 s time limit (more time to explore)
@@ -82,11 +82,13 @@ def evaluate_policy_multi_episodes(
                 deterministic=True
             )
             obs, r, terminated, truncated, info = eval_env.step(action)
-            episode_start = np.zeros((1,), dtype=bool)  # Only first step is episode start
             
             r = float(r)
             total_r += r
             power_hist.append(float(info.get("power", 0.0)))  # Store actual power
+            
+            # Update episode_start for next iteration
+            episode_start = np.array([terminated or truncated], dtype=bool)
 
             if terminated or truncated:
                 # single final power (if env still stores it in info)
@@ -139,7 +141,7 @@ def main() -> None:
         batch_size=256,
         gamma=0.99,
         gae_lambda=0.95,
-        ent_coef=0.0,
+        ent_coef=0.001,
         verbose=1,
         tensorboard_log="runs/gaussian_beam_tb",
         seed=42,
@@ -147,7 +149,10 @@ def main() -> None:
 
     # Run 16: RecurrentPPO with LSTM + absolute power reward + smoother control
     # 3° init (exact ring), v_max=5°/s, 180s episodes, noise=0.0, save every 100K steps
-    total_steps = 1_000_000
+    total_steps = 250_000
+    
+    # Create evaluation environment
+    eval_env = DummyVecEnv([lambda: make_eval_env(seed=999, noise_std=0.0)])
     
     # Checkpoint callback - saves model every 100K steps
     checkpoint_callback = CheckpointCallback(
@@ -158,7 +163,22 @@ def main() -> None:
         save_vecnormalize=False,
     )
     
-    model.learn(total_timesteps=total_steps, callback=checkpoint_callback)
+    # EvalCallback - saves best model based on evaluation performance
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path="./models/best_model/",
+        log_path="./logs/eval/",
+        eval_freq=25_000,  # Evaluate every 25K steps
+        n_eval_episodes=20,
+        deterministic=True,
+        render=False,
+    )
+    
+    # Combine callbacks
+    from stable_baselines3.common.callbacks import CallbackList
+    callback = CallbackList([checkpoint_callback, eval_callback])
+    
+    model.learn(total_timesteps=total_steps, callback=callback)
 
     os.makedirs("models", exist_ok=True)
     model.save("models/recurrent_ppo_run16_final")
