@@ -144,7 +144,7 @@ def evaluate_policy_multi_episodes(
 def main() -> None:
     # --- Training settings ---
     n_envs = 8
-    total_steps = 250_000  # change to 10_000_000 for overnight run
+    total_steps = 10_000_000  # change to 10_000_000 for overnight run
 
     # 1) Build TRAIN envs FIRST (vectorized)
     train_env = DummyVecEnv([
