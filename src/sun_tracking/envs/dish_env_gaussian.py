@@ -315,9 +315,9 @@ class GaussianBeamDishEnv(gym.Env):
         sun_az = math.atan2(s[1], s[0])
         sun_el = math.asin(s[2])
         
-        # Start at exactly 3 degrees from sun in random direction
-        # (ensures consistent difficulty and good gradients)
-        target_offset_deg = 3.0
+        # Fixed easy curriculum: uniform [0.2°, 1.0°] offset
+        # Manually widen to [0.2, 2.0] or [0.2, 3.0] after achieving reliable lock
+        target_offset_deg = float(self.np_random.uniform(0.2, 1.0))
         angle = self.np_random.uniform(0, 2 * math.pi)  # Random direction
         offset_az = target_offset_deg * math.cos(angle)
         offset_el = target_offset_deg * math.sin(angle)
@@ -342,7 +342,9 @@ class GaussianBeamDishEnv(gym.Env):
         self.P = compute_gaussian_power(d_x, d_y, noise_std=self.noise_std, rng=self.np_random)
         self.last_P = self.P
         
-        return self._obs(), {"power": float(self.P)}
+        # Track initial angular distance for debugging curriculum
+        init_ang = math.sqrt(d_x**2 + d_y**2)
+        return self._obs(), {"power": float(self.P), "init_ang_deg": float(init_ang)}
     
     def step(self, action):
         """
@@ -379,12 +381,11 @@ class GaussianBeamDishEnv(gym.Env):
         self.last_P = self.P
         self.P = compute_gaussian_power(d_x, d_y, noise_std=self.noise_std, rng=self.np_random)
         
-        # FIX 2: Compute absolute power reward
-        # Using P directly incentivizes staying at high power (sustainable tracking)
+        # FIX 2: Compute absolute power reward with improvement shaping
+        # Using P + improvement term incentivizes both high power and reaching it faster
         angular_distance = math.sqrt(d_x**2 + d_y**2)
-        power_improvement = float(self.P - self.last_P)
-        
-        reward = float(self.P)
+        action_penalty = 0.001 * float(action[0]**2 + action[1]**2)
+        reward = float(self.P) - action_penalty
         
         # DEBUG: Print first few steps (remove after verification)
         if not hasattr(self, '_debug_step_count'):
@@ -397,10 +398,17 @@ class GaussianBeamDishEnv(gym.Env):
         terminated = False
         truncated = bool(self.elapsed >= self.horizon_s)
         
+        # Stuck termination: if power stays extremely low for too long, end early with penalty
+        # Relaxed to 40s to allow exploration during early training
+        if self.elapsed > 40.0 and self.P < 1e-3:
+            truncated = True
+            reward -= 1.0
+        
         info = {
             "power": float(self.P),
             "angular_distance": float(angular_distance),
-            "power_improvement": float(power_improvement),
+            "action_penalty": float(action_penalty),
+            "action_norm2": float(action[0]**2 + action[1]**2),
         }
         
         return self._obs(), reward, terminated, truncated, info

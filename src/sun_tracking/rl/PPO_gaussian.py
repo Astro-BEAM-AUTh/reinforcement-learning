@@ -1,46 +1,56 @@
-"""RecurrentPPO (LSTM) training for Gaussian beam sun tracking environment."""
-import os
+"""
+RecurrentPPO (LSTM) training for Gaussian beam sun tracking environment.
 
+Key fixes:
+- Use N parallel training envs (n_envs) and build the model with THAT env.
+- Use a separate eval_env for EvalCallback (do NOT use training env for eval).
+- Keep your manual multi-episode evaluation function.
+"""
+import os
 import numpy as np
+
 from sb3_contrib import RecurrentPPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from sun_tracking.envs.dish_env_gaussian import GaussianBeamDishEnv
 
-# Constants
-SUCCESS_POWER_THRESHOLD = 0.95  # Power threshold for considering sun tracking successful
 
-# ---------- ENV FACTORIES ----------
+# ----------------- CONFIG -----------------
+
+SUCCESS_POWER_THRESHOLD = 0.95  # Tail-power threshold for "success"
+
+
+# ----------------- ENV FACTORIES -----------------
 
 def make_train_env(seed: int = 0) -> Monitor:
-    """Environment used for training (no noise for curriculum learning)."""
+    """Environment used for training (noise-free curriculum)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
         v_max_deg_s=2.0,
         tau=0.3,
-        noise_std=0.0,   # no noise - learn from clean gradients first
-        horizon_s=180.0,  # 180 s time limit (more time to explore)
+        noise_std=0.0,
+        horizon_s=180.0,
         seed=seed,
     )
     return Monitor(env)
 
 
 def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
-    """Environment used for evaluation (optionally noise-free)."""
+    """Environment used for evaluation (separate from training)."""
     env = GaussianBeamDishEnv(
         dt=0.5,
         v_max_deg_s=2.0,
         tau=0.3,
-        noise_std=noise_std,  # usually 0.0 for clean eval
-        horizon_s=180.0,  # 180 s time limit (more time to explore)
+        noise_std=noise_std,
+        horizon_s=180.0,
         seed=seed,
     )
     return Monitor(env)
 
 
-# ---------- EVALUATION FUNCTION ----------
+# ----------------- EVALUATION (MANUAL) -----------------
 
 def evaluate_policy_multi_episodes(
     model: RecurrentPPO,
@@ -52,52 +62,56 @@ def evaluate_policy_multi_episodes(
     """
     Evaluate a RecurrentPPO policy over multiple episodes.
 
-    - model: trained RecurrentPPO model
-    - n_episodes: how many episodes to average over
-    - noise_std: sensor noise during eval
-    - seed: seed for env (controls initial conditions)
-    - tail_k: how many last steps to average for "tail power"
+    Returns:
+      (avg_return, avg_tail_power, success_rate)
     """
     eval_env = make_eval_env(seed=seed, noise_std=noise_std)
 
     returns = []
-    last_powers = []      # single final power (for debugging)
-    tail_powers = []      # average power over last tail_k steps
+    last_powers = []
+    tail_powers = []
+    final_angular_distances = []
+    tail_angular_distances = []
 
     for _ in range(n_episodes):
         obs, info = eval_env.reset()
-        # FIX 1: Reset LSTM states at episode start
+
         lstm_states = None
         episode_start = np.ones((1,), dtype=bool)
-        
+
         total_r = 0.0
-        power_hist = []  # Track actual power, not reward
+        power_hist = []
+        angular_dist_hist = []
 
         while True:
-            # FIX 1: Pass LSTM states to predict
             action, lstm_states = model.predict(
-                obs, 
+                obs,
                 state=lstm_states,
                 episode_start=episode_start,
-                deterministic=True
+                deterministic=True,
             )
             obs, r, terminated, truncated, info = eval_env.step(action)
-            
+
             r = float(r)
             total_r += r
-            power_hist.append(float(info.get("power", 0.0)))  # Store actual power
-            
-            # Update episode_start for next iteration
+
+            power_hist.append(float(info.get("power", 0.0)))
+            angular_dist_hist.append(float(info.get("angular_distance", 0.0)))
+
+            # next step: only True on the first step of the *next* episode
             episode_start = np.array([terminated or truncated], dtype=bool)
 
             if terminated or truncated:
-                # single final power (if env still stores it in info)
                 last_powers.append(float(info.get("power", 0.0)))
 
-                # average POWER (not reward) over last tail_k steps
                 k = min(tail_k, len(power_hist))
                 tail_avg = sum(power_hist[-k:]) / k
                 tail_powers.append(tail_avg)
+
+                final_angular_distances.append(angular_dist_hist[-1] if angular_dist_hist else 0.0)
+                k_ang = min(tail_k, len(angular_dist_hist))
+                tail_ang_avg = sum(angular_dist_hist[-k_ang:]) / k_ang if k_ang > 0 else 0.0
+                tail_angular_distances.append(tail_ang_avg)
 
                 returns.append(total_r)
                 break
@@ -105,36 +119,48 @@ def evaluate_policy_multi_episodes(
     avg_return = sum(returns) / len(returns)
     avg_last_power = sum(last_powers) / len(last_powers)
     avg_tail_power = sum(tail_powers) / len(tail_powers)
+    avg_final_ang = sum(final_angular_distances) / len(final_angular_distances)
+    avg_tail_ang = sum(tail_angular_distances) / len(tail_angular_distances)
 
-    # success based on *tail average* instead of one noisy sample
     success_rate = sum(1 for p in tail_powers if p > SUCCESS_POWER_THRESHOLD) / len(tail_powers)
+    success_rate_05 = sum(1 for p in tail_powers if p > 0.5) / len(tail_powers)
+    success_rate_08 = sum(1 for p in tail_powers if p > 0.8) / len(tail_powers)
 
     print(f"Eval over {n_episodes} episodes (noise_std={noise_std}):")
     print(f"  Avg total reward            : {avg_return:.2f}")
     print(f"  Avg last power (single step): {avg_last_power:.4f}")
     print(f"  Avg tail power (last {tail_k} steps): {avg_tail_power:.4f}")
+    print(f"  Avg final angular distance  : {avg_final_ang:.4f} deg")
+    print(f"  Avg tail angular distance (last {tail_k} steps): {avg_tail_ang:.4f} deg")
+    print(f"  Success (tail_avg > 0.5)    : {success_rate_05 * 100:.1f}%")
+    print(f"  Success (tail_avg > 0.8)    : {success_rate_08 * 100:.1f}%")
     print(f"  Success (tail_avg > {SUCCESS_POWER_THRESHOLD})   : {success_rate * 100:.1f}%")
 
     return avg_return, avg_tail_power, success_rate
 
 
-
-# ---------- MAIN ----------
+# ----------------- MAIN TRAINING -----------------
 
 def main() -> None:
-    """Train RecurrentPPO (LSTM) on Gaussian beam sun tracking environment."""
-    # makes the gym env look like a vector of size 1 so SB3 can use it
-    env = DummyVecEnv([lambda: make_train_env(seed=42)])
+    # --- Training settings ---
+    n_envs = 8
+    total_steps = 250_000  # change to 10_000_000 for overnight run
 
-    # FIX 1: Use LSTM policy with recurrent architecture
-    # LSTM allows agent to remember past observations (power trajectory)
-    # This is critical since we only observe power, not sun position
-    policy_kwargs = {"net_arch": [128, 128]}  # Hidden layers before LSTM
+    # 1) Build TRAIN envs FIRST (vectorized)
+    train_env = DummyVecEnv([
+        (lambda i=i: make_train_env(seed=42 + i))
+        for i in range(n_envs)
+    ])
 
-    # this is the model we train
+    # 2) Build EVAL env separately (single env)
+    eval_env = DummyVecEnv([lambda: make_eval_env(seed=999, noise_std=0.0)])
+
+    # 3) Create model with the TRAIN env
+    policy_kwargs = {"net_arch": [128, 128]}
+
     model = RecurrentPPO(
-        "MlpLstmPolicy",  # FIX 1: LSTM policy for memory
-        env,
+        "MlpLstmPolicy",
+        train_env,
         policy_kwargs=policy_kwargs,
         learning_rate=3e-4,
         n_steps=1024,
@@ -147,14 +173,7 @@ def main() -> None:
         seed=42,
     )
 
-    # Run 16: RecurrentPPO with LSTM + absolute power reward + smoother control
-    # 3° init (exact ring), v_max=5°/s, 180s episodes, noise=0.0, save every 100K steps
-    total_steps = 250_000
-    
-    # Create evaluation environment
-    eval_env = DummyVecEnv([lambda: make_eval_env(seed=999, noise_std=0.0)])
-    
-    # Checkpoint callback - saves model every 100K steps
+    # 4) Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=100_000,
         save_path="./models/checkpoints/",
@@ -162,31 +181,30 @@ def main() -> None:
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
-    
-    # EvalCallback - saves best model based on evaluation performance
+
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path="./models/best_model/",
         log_path="./logs/eval/",
-        eval_freq=25_000,  # Evaluate every 25K steps
+        eval_freq=25_000,
         n_eval_episodes=20,
         deterministic=True,
         render=False,
     )
-    
-    # Combine callbacks
-    from stable_baselines3.common.callbacks import CallbackList
+
     callback = CallbackList([checkpoint_callback, eval_callback])
-    
+
+    # 5) Train
     model.learn(total_timesteps=total_steps, callback=callback)
 
+    # 6) Save final
     os.makedirs("models", exist_ok=True)
     model.save("models/recurrent_ppo_run16_final")
 
-    # --- Multi-episode evaluation ---
-    print("\n" + "="*60)
+    # 7) Manual evaluation (optional)
+    print("\n" + "=" * 60)
     print("EVALUATION")
-    print("="*60)
+    print("=" * 60)
     evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.0, seed=999)
 
 
