@@ -315,9 +315,26 @@ class GaussianBeamDishEnv(gym.Env):
         sun_az = math.atan2(s[1], s[0])
         sun_el = math.asin(s[2])
         
-        # Fixed easy curriculum: uniform [0.2°, 1.0°] offset
-        # Manually widen to [0.2, 2.0] or [0.2, 3.0] after achieving reliable lock
-        target_offset_deg = float(self.np_random.uniform(0.2, 1.0))
+        # Mode selection priority: options > _eval_mode attribute > default "train"
+        mode = (options or {}).get("mode", getattr(self, "_eval_mode", "train"))
+        
+        if mode == "easy":
+            # Easy mode: force offset in [0.2°, 1.0°] for evaluation
+            target_offset_deg = float(self.np_random.uniform(0.2, 1.0))
+        elif mode == "hard":
+            # Hard mode: force offset in [1.0°, 3.0°] for evaluation
+            target_offset_deg = float(self.np_random.uniform(1.0, 3.0))
+        elif mode == "train":
+            # Training mode: 100% hard curriculum [1.0°, 3.0°]
+            target_offset_deg = float(self.np_random.uniform(1.0, 3.0))
+        else:
+            # Mixed mode (if ever needed): 70% easy, 30% hard
+            u = float(self.np_random.uniform(0.0, 1.0))
+            if u < 0.70:  # noqa: SIM108
+                target_offset_deg = float(self.np_random.uniform(0.2, 1.0))
+            else:
+                target_offset_deg = float(self.np_random.uniform(1.0, 3.0))
+        
         angle = self.np_random.uniform(0, 2 * math.pi)  # Random direction
         offset_az = target_offset_deg * math.cos(angle)
         offset_el = target_offset_deg * math.sin(angle)

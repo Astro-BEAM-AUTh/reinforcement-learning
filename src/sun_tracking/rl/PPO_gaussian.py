@@ -37,8 +37,12 @@ def make_train_env(seed: int = 0) -> Monitor:
     return Monitor(env)
 
 
-def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
-    """Environment used for evaluation (separate from training)."""
+def make_eval_env(seed: int = 0, noise_std: float = 0.0, mode: str = "mixed") -> Monitor:
+    """Environment used for evaluation (separate from training).
+    
+    Args:
+        mode: "easy" (0.2-1.0°), "hard" (1.0-3.0°), or "mixed" (70/30 split)
+    """
     env = GaussianBeamDishEnv(
         dt=0.5,
         v_max_deg_s=2.0,
@@ -47,6 +51,8 @@ def make_eval_env(seed: int = 0, noise_std: float = 0.0) -> Monitor:
         horizon_s=180.0,
         seed=seed,
     )
+    # Store mode for use in reset
+    env._eval_mode = mode
     return Monitor(env)
 
 
@@ -58,14 +64,18 @@ def evaluate_policy_multi_episodes(
     noise_std: float = 0.0,
     seed: int = 123,
     tail_k: int = 100,
+    mode: str = "mixed",
 ) -> tuple[float, float, float]:
     """
     Evaluate a RecurrentPPO policy over multiple episodes.
 
+    Args:
+        mode: "easy" (0.2-1.0°), "hard" (1.0-3.0°), or "mixed" (70/30 split)
+
     Returns:
       (avg_return, avg_tail_power, success_rate)
     """
-    eval_env = make_eval_env(seed=seed, noise_std=noise_std)
+    eval_env = make_eval_env(seed=seed, noise_std=noise_std, mode=mode)
 
     returns = []
     last_powers = []
@@ -144,7 +154,7 @@ def evaluate_policy_multi_episodes(
 def main() -> None:
     # --- Training settings ---
     n_envs = 8
-    total_steps = 10_000_000  # change to 10_000_000 for overnight run
+    total_steps = 2_000_000  # 2M steps with 100% hard curriculum [1°, 3°]
 
     # 1) Build TRAIN envs FIRST (vectorized)
     train_env = DummyVecEnv([
@@ -153,7 +163,8 @@ def main() -> None:
     ])
 
     # 2) Build EVAL env separately (single env)
-    eval_env = DummyVecEnv([lambda: make_eval_env(seed=999, noise_std=0.0)])
+    # Explicitly evaluate on hard mode [1.0°, 3.0°] to match training difficulty
+    eval_env = DummyVecEnv([lambda: make_eval_env(seed=999, noise_std=0.0, mode="hard")])
 
     # 3) Create model with the TRAIN env
     policy_kwargs = {"net_arch": [128, 128]}
@@ -186,7 +197,7 @@ def main() -> None:
         eval_env,
         best_model_save_path="./models/best_model/",
         log_path="./logs/eval/",
-        eval_freq=25_000,
+        eval_freq=100_000,
         n_eval_episodes=20,
         deterministic=True,
         render=False,
@@ -203,9 +214,16 @@ def main() -> None:
 
     # 7) Manual evaluation (optional)
     print("\n" + "=" * 60)
-    print("EVALUATION")
+    print("EVALUATION - EASY MODE (offset [0.2°, 1.0°])")
     print("=" * 60)
-    evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.0, seed=999)
+    eval_easy_env = make_eval_env(seed=999, noise_std=0.0)
+    evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.0, seed=999, mode="easy")
+    
+    print("\n" + "=" * 60)
+    print("EVALUATION - HARD MODE (offset [1.0°, 3.0°])")
+    print("=" * 60)
+    eval_hard_env = make_eval_env(seed=888, noise_std=0.0)
+    evaluate_policy_multi_episodes(model, n_episodes=200, noise_std=0.0, seed=888, mode="hard")
 
 
 if __name__ == "__main__":
